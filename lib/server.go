@@ -2,6 +2,7 @@ package rtrlib
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -10,9 +11,16 @@ import (
 	"math/rand"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 
 	"golang.org/x/crypto/ssh"
+)
+
+const (
+	SD_TYPE_VRP = iota
+	SD_TYPE_ROUTER_KEY
+	SD_TYPE_VAP
 )
 
 func GenerateSessionId() uint16 {
@@ -34,10 +42,10 @@ type RTREventHandler interface {
 // Be sure to have all of these as pointers, or SetFlag() cannot work!
 type SendableData interface {
 	Copy() SendableData
+	Cmp(SendableData) int
 	Equals(SendableData) bool
-	HashKey() string
 	String() string
-	Type() string
+	Type() int
 	SetFlag(uint8)
 	GetFlag() uint8
 }
@@ -209,19 +217,12 @@ func NewServer(configuration ServerConfiguration, handler RTRServerEventHandler,
 	}
 }
 
-func ConvertSDListToMap(SDs []SendableData) map[string]uint8 {
-	sdMap := make(map[string]uint8, len(SDs))
-	for _, v := range SDs {
-		sdMap[v.HashKey()] = v.GetFlag()
-	}
-	return sdMap
-}
-
 func ComputeDiff(newSDs, prevSDs []SendableData, populateUnchanged bool) (added, removed, unchanged []SendableData) {
 	added = make([]SendableData, 0)
 	removed = make([]SendableData, 0)
 	unchanged = make([]SendableData, 0)
 
+/* XXX
 	newSDsMap := ConvertSDListToMap(newSDs)
 	prevSDsMap := ConvertSDListToMap(prevSDs)
 
@@ -244,12 +245,13 @@ func ComputeDiff(newSDs, prevSDs []SendableData, populateUnchanged bool) (added,
 			unchanged = append(unchanged, rcopy)
 		}
 	}
-
+*/
 	return added, removed, unchanged
 }
 
 func ApplyDiff(diff, prevSDs []SendableData) []SendableData {
 	newSDs := make([]SendableData, 0)
+/* XXX
 	diffMap := ConvertSDListToMap(diff)
 	prevSDsMap := ConvertSDListToMap(prevSDs)
 
@@ -278,6 +280,7 @@ func ApplyDiff(diff, prevSDs []SendableData) []SendableData {
 		}
 
 	}
+*/
 	return newSDs
 }
 
@@ -342,6 +345,11 @@ func (s *Server) CountSDs() int {
 }
 
 func (s *Server) AddData(new []SendableData) {
+	// first sort new so we can compare with s.sdCurrent
+	slices.SortFunc(new, func(a, b SendableData) int {
+		return a.Cmp(b)
+	})
+
 	s.sdlock.RLock()
 
 	added, removed, _ := ComputeDiff(new, s.sdCurrent, false)
@@ -827,16 +835,36 @@ type VRP struct {
 	Flags  uint8
 }
 
-func (r *VRP) Type() string {
-	return "VRP"
+func (r *VRP) Type() int {
+	return SD_TYPE_VRP
 }
 
 func (r *VRP) String() string {
 	return fmt.Sprintf("VRP %v -> /%v, AS%v, Flags: %v", r.Prefix.String(), r.MaxLen, r.ASN, r.Flags)
 }
 
-func (vrp *VRP) HashKey() string {
-	return fmt.Sprintf("%v-%v-%v", vrp.Prefix.String(), vrp.MaxLen, vrp.ASN)
+func (r1 *VRP) Cmp(r2 SendableData) int {
+	r := cmp.Compare(r1.Type(), r2.Type())
+	if (r != 0) {
+		return r
+	}
+
+	// Sort VRPs as per draft-ietf-sidrops-8210bis-10
+	r2True := r2.(*VRP)
+	r = cmp.Compare(r1.Prefix.Bits(), r2True.Prefix.Bits())
+	if (r != 0) {
+		return r
+	}
+	r = cmp.Compare(r1.MaxLen, r2True.MaxLen)
+	if (r != 0) {
+		return r
+	}
+	r = r1.Prefix.Addr().Compare(r2True.Prefix.Addr())
+	if (r != 0) {
+		return r
+	}
+	r = cmp.Compare(r1.ASN, r2True.ASN)
+	return r
 }
 
 func (r1 *VRP) Equals(r2 SendableData) bool {
@@ -872,16 +900,31 @@ type BgpsecKey struct {
 	Flags  uint8
 }
 
-func (brk *BgpsecKey) Type() string {
-	return "BGPsecKey"
+func (brk *BgpsecKey) Type() int {
+	return SD_TYPE_ROUTER_KEY
 }
 
 func (brk *BgpsecKey) String() string {
 	return fmt.Sprintf("BGPsec AS%v -> %x, Flags: %v", brk.ASN, brk.Ski, brk.Flags)
 }
 
-func (brk *BgpsecKey) HashKey() string {
-	return fmt.Sprintf("%v-%x-%x", brk.ASN, brk.Ski, brk.Pubkey)
+func (r1 *BgpsecKey) Cmp(r2 SendableData) int {
+	r := cmp.Compare(r1.Type(), r2.Type())
+	if (r != 0) {
+		return r
+	}
+
+	r2True := r2.(*BgpsecKey)
+	r = cmp.Compare(r1.ASN, r2True.ASN)
+	if (r != 0) {
+		return r
+	}
+	r = bytes.Compare(r1.Ski, r2True.Ski)
+	if (r != 0) {
+		return r
+	}
+	r = bytes.Compare(r1.Pubkey, r2True.Pubkey)
+	return r
 }
 
 func (r1 *BgpsecKey) Equals(r2 SendableData) bool {
@@ -919,16 +962,27 @@ type VAP struct {
 	Providers   []uint32
 }
 
-func (vap *VAP) Type() string {
-	return "ASPA"
+func (vap *VAP) Type() int {
+	return SD_TYPE_VAP
 }
 
 func (vap *VAP) String() string {
 	return fmt.Sprintf("ASPA AS%v -> Providers: %v", vap.CustomerASN, vap.Providers)
 }
 
-func (vap *VAP) HashKey() string {
-	return fmt.Sprintf("%v-%v", vap.CustomerASN, vap.Providers)
+func (r1 *VAP) Cmp(r2 SendableData) int {
+	r := cmp.Compare(r1.Type(), r2.Type())
+	if (r != 0) {
+		return r
+	}
+
+	r2True := r2.(*VAP)
+	r = cmp.Compare(r1.CustomerASN, r2True.CustomerASN)
+	if (r != 0) {
+		return r
+	}
+	r = slices.Compare(r1.Providers, r2True.Providers)
+	return r
 }
 
 func (r1 *VAP) Equals(r2 SendableData) bool {
@@ -937,7 +991,8 @@ func (r1 *VAP) Equals(r2 SendableData) bool {
 	}
 
 	r2True := r2.(*VAP)
-	return r1.CustomerASN == r2True.CustomerASN && fmt.Sprint(r1.Providers) == fmt.Sprint(r2True.Providers) /*This could be made faster*/
+	return r1.CustomerASN == r2True.CustomerASN &&
+	    slices.Compare(r1.Providers, r2True.Providers) == 0
 }
 
 func (vap *VAP) Copy() SendableData {
@@ -1053,22 +1108,25 @@ func (c *Client) SendData(sd SendableData) {
 		if c.version < 2 || c.dontSendASPA {
 			return
 		}
-
+		p := make([]uint32, 0)
+		if (t.GetFlag() == FLAG_ADDED) {
+			p = t.Providers
+		}
 		pdu4 := &PDUASPA{
 			Version:           c.version,
 			Flags:             t.Flags,
 			AFIFlags:          AFI_IPv4,
-			ProviderASCount:   uint16(len(t.Providers)),
+			ProviderASCount:   uint16(len(p)),
 			CustomerASNumber:  t.CustomerASN,
-			ProviderASNumbers: t.Providers,
+			ProviderASNumbers: p,
 		}
 		pdu6 := &PDUASPA{
 			Version:           c.version,
 			Flags:             t.Flags,
 			AFIFlags:          AFI_IPv6,
-			ProviderASCount:   uint16(len(t.Providers)),
+			ProviderASCount:   uint16(len(p)),
 			CustomerASNumber:  t.CustomerASN,
-			ProviderASNumbers: t.Providers,
+			ProviderASNumbers: p,
 		}
 		c.SendPDU(pdu4)
 		c.SendPDU(pdu6)
