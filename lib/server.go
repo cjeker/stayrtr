@@ -351,7 +351,6 @@ func (s *Server) AddData(new []SendableData) {
 	})
 
 	s.sdlock.RLock()
-
 	added, removed, _ := ComputeDiff(new, s.sdCurrent, false)
 	if s.log != nil && s.logverbose {
 		s.log.Debugf("Computed diff: added (%v), removed (%v)", added, removed)
@@ -361,23 +360,28 @@ func (s *Server) AddData(new []SendableData) {
 	curDiff := append(added, removed...)
 	s.sdlock.RUnlock()
 
-	s.AddSDsDiff(curDiff)
+	nextDiff := s.AddSDsDiff(curDiff)
+
+	s.UpdateCache(new, nextDiff)
 }
 
-func (s *Server) AddSDsDiff(diff []SendableData) {
+func (s *Server) AddSDsDiff(diff []SendableData) [][]SendableData {
 	s.sdlock.RLock()
 	nextDiff := make([][]SendableData, len(s.sdListDiff) + 1)
 	for i, prevSDs := range s.sdListDiff {
 		nextDiff[i] = ApplyDiff(diff, prevSDs)
 	}
-	newSDCurrent := ApplyDiff(diff, s.sdCurrent)
+	nextDiff = append(nextDiff, diff)
 	s.sdlock.RUnlock()
 
+	return nextDiff
+}
+
+func (s *Server) UpdateCache(newSDCurrent []SendableData, nextDiff [][]SendableData) {
 	s.sdlock.Lock()
 	defer s.sdlock.Unlock()
 	newserial := s.generateSerial()
 
-	nextDiff = append(nextDiff, diff)
 	if s.keepDiff > 0 && len(nextDiff) > s.keepDiff {
 		nextDiff = nextDiff[len(nextDiff) - s.keepDiff:]
 	}
