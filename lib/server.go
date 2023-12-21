@@ -222,30 +222,56 @@ func ComputeDiff(newSDs, prevSDs []SendableData, populateUnchanged bool) (added,
 	removed = make([]SendableData, 0)
 	unchanged = make([]SendableData, 0)
 
-/* XXX
-	newSDsMap := ConvertSDListToMap(newSDs)
-	prevSDsMap := ConvertSDListToMap(prevSDs)
+	// first sort so we can compare the two sets
+	slices.SortFunc(newSDs, func(a, b SendableData) int {
+		return a.Cmp(b)
+	})
+	slices.SortFunc(prevSDs, func(a, b SendableData) int {
+		return a.Cmp(b)
+	})
 
-	for _, item := range newSDs {
-		_, exists := prevSDsMap[item.HashKey()]
-		if !exists {
+
+	newLen := len(newSDs)
+	prevLen := len(prevSDs)
+	newI := 0
+	prevI := 0
+
+	for newI < newLen && prevI < prevLen {
+		newItem := newSDs[newI]
+		prevItem := prevSDs[prevI]
+
+		switch newItem.Cmp(prevItem) {
+		case 0:
+			if populateUnchanged {
+				rcopy := newItem.Copy()
+				unchanged = append(unchanged, rcopy)
+			}
+			newI++
+			prevI++
+		case 1:
+			rcopy := prevItem.Copy()
+			rcopy.SetFlag(FLAG_REMOVED)
+			removed = append(removed, rcopy)
+			prevI++
+		case -1:
+			rcopy := newItem.Copy()
+			rcopy.SetFlag(FLAG_ADDED)
+			added = append(added, rcopy)
+			newI++
+		}
+	}
+
+	for _, item := range newSDs[newI:] {
 			rcopy := item.Copy()
 			rcopy.SetFlag(FLAG_ADDED)
 			added = append(added, rcopy)
-		}
 	}
-	for _, item := range prevSDs {
-		_, exists := newSDsMap[item.HashKey()]
-		if !exists {
-			rcopy := item.Copy()
-			rcopy.SetFlag(FLAG_REMOVED)
-			removed = append(removed, rcopy)
-		} else if populateUnchanged {
-			rcopy := item.Copy()
-			unchanged = append(unchanged, rcopy)
-		}
+	for _, item := range prevSDs[prevI:] {
+		rcopy := item.Copy()
+		rcopy.SetFlag(FLAG_REMOVED)
+		removed = append(removed, rcopy)
 	}
-*/
+
 	return added, removed, unchanged
 }
 
@@ -345,11 +371,6 @@ func (s *Server) CountSDs() int {
 }
 
 func (s *Server) AddData(new []SendableData) {
-	// first sort new so we can compare with s.sdCurrent
-	slices.SortFunc(new, func(a, b SendableData) int {
-		return a.Cmp(b)
-	})
-
 	s.sdlock.RLock()
 	added, removed, _ := ComputeDiff(new, s.sdCurrent, false)
 	if s.log != nil && s.logverbose {
