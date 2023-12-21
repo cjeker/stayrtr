@@ -464,7 +464,6 @@ func (s *state) applyUpdateFromNewState(vrps []rtr.VRP, brks []rtr.BgpsecKey, va
 		BgpSecKeys: brksjson,
 		ASPA:       aspajson,
 	}
-
 	s.lockJson.Unlock()
 
 	if s.metricsEvent != nil {
